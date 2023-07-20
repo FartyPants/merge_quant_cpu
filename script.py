@@ -1,4 +1,12 @@
 from pathlib import Path
+import os
+
+def set_protobuf_implementation_to_python():
+    os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
+
+# Call the function to set the environment variable before using Protobuf or the Transformers library
+set_protobuf_implementation_to_python()
+
 
 import gradio as gr
 import json
@@ -8,6 +16,7 @@ import torch
 import transformers
 from peft import PeftModel
 from transformers import LlamaForCausalLM, LlamaTokenizer 
+from transformers import LlamaConfig
 import argparse
 import sys
 from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
@@ -17,7 +26,13 @@ from transformers import AutoTokenizer
 from modules import utils
 from modules.models import unload_model
 import modules.shared as shared
-import modules.monkey_patch_gptq_lora as monkeypatch
+
+from peft.tuners.lora import LoraLayer
+from peft import (
+    LoraConfig,
+    get_peft_model
+)
+
 
 import pkg_resources
 
@@ -69,6 +84,24 @@ params = {
 }
 
 refresh_symbol = '\U0001f504'  # 🔄
+
+
+def calc_trainable_parameters(model):
+    trainable_params = 0
+    all_param = 0 
+    for _, param in model.named_parameters():
+        num_params = param.numel()
+        # if using DS Zero 3 and the weights are initialized empty
+        if num_params == 0 and hasattr(param, "ds_numel"):
+            num_params = param.ds_numel
+
+        all_param += num_params
+        if param.requires_grad:
+            trainable_params += num_params
+    
+    return trainable_params,all_param
+
+
 
 def load_data(data_path, tokenizer, n_samples):
     with open(data_path, "r", encoding="utf-8") as f:
@@ -183,6 +216,9 @@ def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu):
         device_map=device_map_arg,
         )
 
+    model_trainable_params, model_all_params = calc_trainable_parameters(base_model)
+    print(f"Model Trainable params: {model_trainable_params:,d} ({100 * model_trainable_params / model_all_params:.4f} %), All params: {model_all_params:,d}")
+
     first_weight = base_model.model.layers[0].self_attn.q_proj.weight
     first_weight_old = first_weight.clone()
 
@@ -194,6 +230,10 @@ def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu):
         device_map=device_map_arg,
         torch_dtype=torch.float16,
     )
+
+    model_trainable_params, model_all_params = calc_trainable_parameters(lora_model)
+    print(f"LoRA  Trainable params: {model_trainable_params:,d} ({100 * model_trainable_params / model_all_params:.4f} %), All params: {model_all_params:,d}")
+
 
     lora_weight = lora_model.base_model.model.model.layers[0].self_attn.q_proj.weight
     #print(f"Layer[0] LoRA weight: {first_weight_old} -> {lora_weight}")
@@ -357,6 +397,9 @@ def process_Quant(model_name, output_dir,groupsize,wbits,desact,fast_tokenizer,g
 
     end = time.time()
  
+    model_trainable_params, model_all_params = calc_trainable_parameters(model)
+    print(f"Before Trainable params: {model_trainable_params:,d} ({100 * model_trainable_params / model_all_params:.4f} %), All params: {model_all_params:,d}")
+
 
     print(f"Loaded in : {end - start:.2f} sec")
 
@@ -398,6 +441,10 @@ def process_Quant(model_name, output_dir,groupsize,wbits,desact,fast_tokenizer,g
     quantized_model_dir = f"{output_dir}"
     model.save_quantized(quantized_model_dir,use_safetensors=True)
 
+    model_trainable_params, model_all_params = calc_trainable_parameters(model)
+    print(f"After  Trainable params: {model_trainable_params:,d} ({100 * model_trainable_params / model_all_params:.4f} %), All params: {model_all_params:,d}")
+
+
     print(f"Saving tokenizer model...")
     tokenizer.save_pretrained(f"{output_dir}")
 
@@ -421,7 +468,171 @@ def clean_path(base_path: str, path: str):
     return f'{Path(base_path).absolute()}/{path}'
 
 
+def extract_lora_layers(model_name, output_folder):
 
+    device_map_arg = {"": "cpu"}
+
+
+    base_model_name_or_path = Path(f'{shared.args.model_dir}/{model_name}')
+    print(f"Unloading model from memory")
+    unload_model()
+    print(f"Loading model: {base_model_name_or_path}")
+    yield f"Loading model: {base_model_name_or_path}"
+
+    base_model = LlamaForCausalLM.from_pretrained(
+        base_model_name_or_path,
+        load_in_8bit=False,
+        torch_dtype=torch.float16,
+        device_map=device_map_arg,
+        )
+
+    #config = LlamaConfig.from_pretrained(base_model_name_or_path)
+    #extracted_model = type(base_model)(base_model.config)  # Create a new instance of the same type as the base model
+
+    config = LoraConfig(
+        bias="none",
+        task_type="CAUSAL_LM"
+    )
+
+    lora_model = get_peft_model(base_model, config)
+
+    print(f"Extracting")
+    for key, module in base_model.named_modules():
+        if isinstance(module, LoraLayer):
+            lora_model.add_module(key, module)  # Add the LoRa layer to the extracted model
+
+  
+    if not Path(output_folder).exists():
+        os.mkdir(output_folder)
+
+    lora_model.save_pretrained(output_folder)    
+    # Save the model's state dict to a binary file
+    #model_path = output_folder + "/adapter_model.bin"
+    #torch.save(extracted_model.state_dict(), model_path)
+
+    # Save the model's configuration to a JSON file
+    #config = extracted_model.config
+    #config_path = output_folder + "/adapter_config.json"
+
+    #with open(config_path, "w") as config_file:
+    #    json.dump(config, config_file)
+
+    print("Done")
+    return "Done"
+
+# correct combine
+'''
+# Add first lora
+lora_path = ...
+lora_name = "add_detail"
+pipe.unet = PeftModel.from_pretrained(
+    pipe.unet,
+    f"{lora_path}/unet",
+    lora_name
+)
+pipe.text_encoder = PeftModel.from_pretrained(
+    pipe.text_encoder,
+    f"{lora_path}/text_encoder",
+    lora_name
+)
+
+# Merge first LoRA to model weights
+pipe.unet = pipe.unet.merge_and_unload()
+pipe.text_encoder = pipe.text_encoder.merge_and_unload()
+
+# Load second LoRA
+lora_path = ...
+lora_name = "3DMM_V11"
+pipe.unet = PeftModel.from_pretrained(
+    pipe.unet,
+    f"{lora_path}/unet",
+    lora_name
+)
+pipe.text_encoder = PeftModel.from_pretrained(
+    pipe.text_encoder,
+    f"{lora_path}/text_encoder",
+    lora_name
+)
+
+torch.manual_seed(1428928479)
+image = pipe(
+    prompt = "candid RAW portrait photo of a woman (Crystal Simmerman:1.0) with (dark hair:1.0) and a (purple colored suit:1.0) on a dark street with shopping windows (at night:1.2), bokeh, Ilford Delta 3200 film, dof, high definition, detailed, intricate, flashlight",
+    negative_prompt = "bad-hands-5, asian, cropped, lowres, poorly drawn face, out of frame, blurry, blurred, text, watermark, disfigured, closed eyes, ugly, cartoon, render, 3d, plastic, 3d (artwork), rendered, comic",
+    num_inference_steps=20,
+    guidance_scale=7,
+).images[0]
+
+
+    #using torch
+    l1 = torch.load(_path_1)
+    l2 = torch.load(_path_2)
+
+    l1pairs = zip(l1[::2], l1[1::2])
+    l2pairs = zip(l2[::2], l2[1::2])
+
+    for (x1, y1), (x2, y2) in zip(l1pairs, l2pairs):
+        # print("Merging", x1.shape, y1.shape, x2.shape, y2.shape)
+        x1.data = alpha_1 * x1.data + alpha_2 * x2.data
+        y1.data = alpha_1 * y1.data + alpha_2 * y2.data
+
+        out_list.append(x1)
+        out_list.append(y1)
+
+    if opt == "unet":
+
+        print("Saving merged UNET to", output_path)
+        torch.save(out_list, output_path)
+
+'''
+
+
+# combine loras simple, not good
+
+#model = AutoModel... # base model # set `load_in_8bit` to `False`
+#for peft_model_id in peft_model_ids:
+#    model = PeftModel.from_pretrained(model, peft_model_id)
+#    model = model.merge_and_unload()
+
+'''
+# Add first LoRA
+lora_path = ...
+lora_name = "add_detail"
+pipe.unet = PeftModel.from_pretrained(
+    pipe.unet,
+    f"{lora_path}/unet",
+    lora_name
+)
+pipe.text_encoder = PeftModel.from_pretrained(
+    pipe.text_encoder,
+    f"{lora_path}/text_encoder",
+    lora_name
+)
+
+# Add second LoRA
+lora_path = ...
+lora_name = "3DMM_V11"
+pipe.unet.load_adapter(
+    f"{lora_path}/unet",
+    adapter_name=lora_name
+)
+pipe.text_encoder.load_adapter(
+    f"{lora_path}/text_encoder",
+    adapter_name=lora_name
+)
+
+def create_weighted_lora_adapter(pipe, adapters, weights, adapter_name="default"):
+    pipe.unet.add_weighted_adapter(adapters, weights, adapter_name)
+    if isinstance(pipe.text_encoder, PeftModel):
+        pipe.text_encoder.add_weighted_adapter(adapters, weights, adapter_name)
+
+    return pipe
+
+# Mix two LoRAs together
+pipe = create_weighted_lora_adapter(pipe, ["add_detail", "3DMM_V11"], [1.0, 1.0], "combined")
+pipe.unet.set_adapter("combined")
+pipe.text_encoder.set_adapter("combined")
+
+'''
 
 def ui():
 
@@ -483,11 +694,26 @@ def ui():
                 output_dirQ = gr.Textbox(label='Formatted Output Dir', info='The folder name of your merge (relative to text-generation-webui)', value='models/quantizied_model_GPTQ', interactive=True)
 
             gr_applyQuant = gr.Button(value='Do Quantization')        
-                     
+    #with gr.Accordion("Extract Lora", open=False):
+    #    with gr.Column():
+    #        with gr.Row():
+    #            
+    #            with gr.Column():
+    #                with gr.Row():
+    #                    gr_modelmenu3 = gr.Dropdown(choices=utils.get_available_models(), value=model_name, label='LlaMA Model (float 16) HF only, No GPTQ, No GGML',elem_classes='slim-dropdown')
+    #                    create_refresh_button(gr_modelmenu3, lambda: None, lambda: {'choices': utils.get_available_models()}, 'refresh-button')
+    #        with gr.Row():        
+    #            
+    #            output_dirQ3 = gr.Textbox(label='Output Dir', info='The folder name of your output (relative to text-generation-webui)', value='loras/extracted_lora', interactive=True)
+    #
+    #        gr_applySplit = gr.Button(value='Do De-Merge')        
+                       
     gr_out = gr.Markdown('')   
     gr_apply.click(process_mergeCPU, inputs=[gr_modelmenu, gr_loramenu,output_dir,gr_gpu_cpu], outputs=gr_out)
     gr_applyQuant.click(process_Quant,[gr_modelmenu2, output_dirQ,groupsize,wbits,desact,fast_tokenizer,gpu_memory,cpu_memory,low_cpu], gr_out)
-    
+    #gr_applySplit.click(extract_lora_layers,[gr_modelmenu3, output_dirQ3], gr_out)
+
+
     def auto_format(inputs, wbits,groupsize):
         bits = int(wbits)
         group = int(groupsize)
