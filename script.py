@@ -5,7 +5,7 @@ def set_protobuf_implementation_to_python():
     os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 # Call the function to set the environment variable before using Protobuf or the Transformers library
-set_protobuf_implementation_to_python()
+#set_protobuf_implementation_to_python()
 
 
 import gradio as gr
