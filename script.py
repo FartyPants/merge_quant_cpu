@@ -15,7 +15,7 @@ import time
 import torch
 import transformers
 from peft import PeftModel
-from transformers import LlamaForCausalLM, LlamaTokenizer 
+from transformers import LlamaForCausalLM, LlamaTokenizer, AutoModelForCausalLM
 from transformers import LlamaConfig
 import argparse
 import sys
@@ -193,8 +193,23 @@ def create_refresh_button(refresh_component, refresh_method, refreshed_args, ele
     )
     return refresh_button
 
-def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu):
+def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu, gpu_memory,cpu_memory,safetensor):
     
+    max_memory = dict()
+    int_gpu = int(gpu_memory)
+    if int_gpu > 0:    
+        if torch.cuda.is_available():
+            print(f"GPU: {int_gpu}GIB")
+            max_memory.update({i: f"{int_gpu}GIB" for i in range(torch.cuda.device_count())})
+    int_cpu = int(cpu_memory)
+    if int_cpu > 0 and max_memory:
+        max_memory["cpu"] = f"{int_cpu}GIB"
+        print(f"CPU: {max_memory['cpu']}")
+    if not max_memory:
+        max_memory = None
+
+#offload_folder=offload_folder,
+
     base_model_name_or_path = Path(f'{shared.args.model_dir}/{model_name}')
     peft_model_path = Path(f'{shared.args.lora_dir}/{peft_model_name}')
     print(f"Unloading model from memory")
@@ -209,11 +224,14 @@ def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu):
     print(f"Loading base model: {base_model_name_or_path}")
     yield f"Loading base model: {base_model_name_or_path}"
 
-    base_model = LlamaForCausalLM.from_pretrained(
+
+    base_model = AutoModelForCausalLM.from_pretrained(
         base_model_name_or_path,
         load_in_8bit=False,
         torch_dtype=torch.float16,
         device_map=device_map_arg,
+        return_dict=True,
+        max_memory=max_memory, 
         )
 
     model_trainable_params, model_all_params = calc_trainable_parameters(base_model)
@@ -222,47 +240,50 @@ def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu):
     first_weight = base_model.model.layers[0].self_attn.q_proj.weight
     first_weight_old = first_weight.clone()
 
-    print(f"Loading PEFT: {peft_model_path}")
-    yield f"Loading PEFT: {peft_model_path}"
-    lora_model = PeftModel.from_pretrained(
-        base_model,
-        peft_model_path,
-        device_map=device_map_arg,
-        torch_dtype=torch.float16,
-    )
+    if peft_model_name!="None":
+        print(f"Loading PEFT: {peft_model_path}")
+        yield f"Loading PEFT: {peft_model_path}"
+        lora_model = PeftModel.from_pretrained(
+            base_model,
+            peft_model_path,
+            device_map=device_map_arg,
+            torch_dtype=torch.float16,
+            max_memory=max_memory,
+        )
 
-    model_trainable_params, model_all_params = calc_trainable_parameters(lora_model)
-    print(f"LoRA  Trainable params: {model_trainable_params:,d} ({100 * model_trainable_params / model_all_params:.4f} %), All params: {model_all_params:,d}")
+        model_trainable_params, model_all_params = calc_trainable_parameters(lora_model)
+        print(f"LoRA  Trainable params: {model_trainable_params:,d} ({100 * model_trainable_params / model_all_params:.4f} %), All params: {model_all_params:,d}")
 
 
-    lora_weight = lora_model.base_model.model.model.layers[0].self_attn.q_proj.weight
-    #print(f"Layer[0] LoRA weight: {first_weight_old} -> {lora_weight}")
+        lora_weight = lora_model.base_model.model.model.layers[0].self_attn.q_proj.weight
+        #print(f"Layer[0] LoRA weight: {first_weight_old} -> {lora_weight}")
 
-    #assert torch.allclose(first_weight_old, first_weight)
+        #assert torch.allclose(first_weight_old, first_weight)
 
-    # merge weights - new merging method from peft
-    print(f"Running merge_and_unload")
-    yield f"Running merge_and_unload"
-    lora_model = lora_model.merge_and_unload()
-    lora_model.train(False)
+        # merge weights - new merging method from peft
+        print(f"Running merge_and_unload")
+        yield f"Running merge_and_unload"
+        lora_model = lora_model.merge_and_unload()
+        lora_model.train(False)
 
-    # did we do anything?
-    assert not torch.allclose(first_weight_old, first_weight)
+        # did we do anything?
+        assert not torch.allclose(first_weight_old, first_weight)
 
-    print(f"Changing state dict")
-    lora_model_sd = lora_model.state_dict()
-    deloreanized_sd = {
-        k.replace("base_model.model.", ""): v
-        for k, v in lora_model_sd.items()
-        if "lora" not in k
-    }
+
+    #print(f"Changing state dict")
+    #lora_model_sd = lora_model.state_dict()
+    #deloreanized_sd = {
+    #    k.replace("base_model.model.", ""): v
+    #    for k, v in lora_model_sd.items()
+    #    if "lora" not in k
+    #}
     print(f"Loading tokenizer")
    
     tokenizer = LlamaTokenizer.from_pretrained(base_model_name_or_path)
     #max_shard_size="400MB"
     print(f"Saving model in 10GB shard size ... wait - don't touch anyhing yet!")
     yield f"Saving model in 10GB shard size ... wait - don't touch anyhing yet!"
-    LlamaForCausalLM.save_pretrained(base_model, f"{output_dir}", state_dict=deloreanized_sd)
+    LlamaForCausalLM.save_pretrained(base_model, f"{output_dir}", safe_serialization=safetensor) #, state_dict=deloreanized_sd)
    
     tokenizer.save_pretrained(f"{output_dir}")
 
@@ -655,45 +676,52 @@ def ui():
 
     model_name = "None"
     lora_names = "None"
-    with gr.Accordion("Merge HF Model with Lora", open=True):
-        
-        with gr.Column():
-            with gr.Row():
-                
-                with gr.Column():
-                    with gr.Row():
-                        gr_modelmenu = gr.Dropdown(choices=utils.get_available_models(), value=model_name, label='LlaMA Model (float 16) HF only, No GPTQ, No GGML',elem_classes='slim-dropdown')
-                        create_refresh_button(gr_modelmenu, lambda: None, lambda: {'choices': utils.get_available_models()}, 'refresh-button')
-                with gr.Column():
-                    with gr.Row():
-                        gr_loramenu = gr.Dropdown(multiselect=False, choices=utils.get_available_loras(), value=lora_names, label='LoRA', elem_classes='slim-dropdown')
-                        create_refresh_button(gr_loramenu, lambda: None, lambda: {'choices': utils.get_available_loras(), 'value': lora_names}, 'refresh-button')
-            gr_gpu_cpu = gr.Radio(choices=['GPU (Auto)','CPU'], value = 'CPU')
-            output_dir = gr.Textbox(label='Output Dir', info='The folder name of your merge (relative to text-generation-webui)', value='models/my_merged_model_HF')
-            gr_apply = gr.Button(value='Do Merge')
- 
-    with gr.Accordion("Quantize HF Model", open=True):
-        with gr.Column():
-            with gr.Row():
-                
-                with gr.Column():
-                    with gr.Row():
-                        gr_modelmenu2 = gr.Dropdown(choices=utils.get_available_models(), value=model_name, label='LlaMA Model (float 16) HF only, No GPTQ, No GGML',elem_classes='slim-dropdown')
-                        create_refresh_button(gr_modelmenu2, lambda: None, lambda: {'choices': utils.get_available_models()}, 'refresh-button')
-                with gr.Column():
-                    groupsize = gr.Dropdown(label="Groupsize", choices=["None", 32, 64, 128, 1024], value='128')
-                    wbits = gr.Dropdown(label="wbits", choices=["None", 1, 2, 3, 4, 8], value='4', interactive=False)
-                    
-                    desact = gr.Checkbox(label="Quantize with desc_act (can slow down inference but the perplexity may be better)", value=False)
-                    fast_tokenizer= gr.Checkbox(label="Use fast tokenizer", value=True)
-                    low_cpu = gr.Checkbox(label="Low CPU memory usage", value=True)
-                    gpu_memory = gr.Slider(label=f"gpu-memory in MiB for device ", maximum=48, value=0,step=1)
-                    cpu_memory = gr.Slider(label="cpu-memory in MiB", maximum=64, value=0,step=1)
-            with gr.Row():        
-                autoformat = gr.Textbox(label='Name', info='Base name that will be expanded in the Formatted Output Dir', value='quantizied_model', interactive=True)
-                output_dirQ = gr.Textbox(label='Formatted Output Dir', info='The folder name of your merge (relative to text-generation-webui)', value='models/quantizied_model_GPTQ', interactive=True)
 
-            gr_applyQuant = gr.Button(value='Do Quantization')        
+    with gr.Accordion("Memory", open=True):
+        with gr.Row():
+            with gr.Column():
+                gpu_memory = gr.Slider(label=f"gpu-memory in MiB for device ", maximum=48, value=0,step=1)
+                cpu_memory = gr.Slider(label="cpu-memory in MiB", maximum=64, value=0,step=1)
+            with gr.Column():
+                gr.Markdown("Merge / Quantization")
+
+
+    with gr.Accordion("Process", open=True):
+        with gr.Row():
+            with gr.Column():
+                gr.Markdown("1. Merge HF Model with Lora:")
+                with gr.Row():
+                    gr_modelmenu = gr.Dropdown(choices=utils.get_available_models(), value=model_name, label='LlaMA Model (float 16) HF only, No GPTQ, No GGML',elem_classes='slim-dropdown')
+                    create_refresh_button(gr_modelmenu, lambda: None, lambda: {'choices': utils.get_available_models()}, 'refresh-button')
+                with gr.Row():
+                    gr_loramenu = gr.Dropdown(multiselect=False, choices=utils.get_available_loras(), value=lora_names, label='LoRA', elem_classes='slim-dropdown')
+                    create_refresh_button(gr_loramenu, lambda: None, lambda: {'choices': utils.get_available_loras(), 'value': lora_names}, 'refresh-button')
+                    gr.Markdown('If no lora is selected, it will just resave the model in float16')
+                gr_gpu_cpu = gr.Radio(choices=['GPU (Auto)','CPU'], value = 'CPU')
+                safetensor = gr.Checkbox(label="Safe Tensor", value=True)
+                output_dir = gr.Textbox(label='Output Dir', info='The folder name of your merge (relative to text-generation-webui)', value='models/my_merged_model_HF')
+                
+    
+        
+            with gr.Column():
+                gr.Markdown("2. Quantize to GPTQ:")
+                with gr.Row():
+                    gr_modelmenu2 = gr.Dropdown(choices=utils.get_available_models(), value=model_name, label='LlaMA Model (float 16) HF only, No GPTQ, No GGML',elem_classes='slim-dropdown')
+                    create_refresh_button(gr_modelmenu2, lambda: None, lambda: {'choices': utils.get_available_models()}, 'refresh-button')
+                groupsize = gr.Dropdown(label="Groupsize", choices=["None", 32, 64, 128, 1024], value='128')
+                wbits = gr.Dropdown(label="wbits", choices=["None", 1, 2, 3, 4, 8], value='4', interactive=False)
+                        
+                desact = gr.Checkbox(label="Quantize with desc_act (can slow down inference but the perplexity may be better)", value=False)
+                fast_tokenizer= gr.Checkbox(label="Use fast tokenizer", value=True)
+                low_cpu = gr.Checkbox(label="Low CPU memory usage", value=True)
+                with gr.Row():        
+                    autoformat = gr.Textbox(label='Name', info='Base name that will be expanded in the Formatted Output Dir', value='quantizied_model', interactive=True)
+                    output_dirQ = gr.Textbox(label='Formatted Output Dir', info='The folder name of your merge (relative to text-generation-webui)', value='models/quantizied_model_GPTQ', interactive=True)
+        with gr.Row():
+            with gr.Column():    
+                gr_apply = gr.Button(value='Do Merge')
+            with gr.Column():                    
+                gr_applyQuant = gr.Button(value='Do Quantization')        
     #with gr.Accordion("Extract Lora", open=False):
     #    with gr.Column():
     #        with gr.Row():
@@ -709,7 +737,7 @@ def ui():
     #        gr_applySplit = gr.Button(value='Do De-Merge')        
                        
     gr_out = gr.Markdown('')   
-    gr_apply.click(process_mergeCPU, inputs=[gr_modelmenu, gr_loramenu,output_dir,gr_gpu_cpu], outputs=gr_out)
+    gr_apply.click(process_mergeCPU, inputs=[gr_modelmenu, gr_loramenu,output_dir,gr_gpu_cpu,gpu_memory,cpu_memory,safetensor], outputs=gr_out)
     gr_applyQuant.click(process_Quant,[gr_modelmenu2, output_dirQ,groupsize,wbits,desact,fast_tokenizer,gpu_memory,cpu_memory,low_cpu], gr_out)
     #gr_applySplit.click(extract_lora_layers,[gr_modelmenu3, output_dirQ3], gr_out)
 
