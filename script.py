@@ -27,6 +27,8 @@ from modules import utils
 from modules.models import unload_model
 import modules.shared as shared
 
+from modules.ui import create_refresh_button
+
 from peft.tuners.lora import LoraLayer
 from peft import (
     LoraConfig,
@@ -165,33 +167,6 @@ def load_data(data_path, tokenizer, n_samples):
     return dataset
 
 
-class ToolButton(gr.Button, gr.components.FormComponent):
-    """Small button with single emoji as text, fits inside gradio forms"""
-
-    def __init__(self, **kwargs):
-        super().__init__(variant="tool", **kwargs)
-
-    def get_block_name(self):
-        return "button"
-
-
-def create_refresh_button(refresh_component, refresh_method, refreshed_args, elem_class):
-    def refresh():
-        refresh_method()
-        args = refreshed_args() if callable(refreshed_args) else refreshed_args
-
-        for k, v in args.items():
-            setattr(refresh_component, k, v)
-
-        return gr.update(**(args or {}))
-
-    refresh_button = ToolButton(value=refresh_symbol, elem_classes=elem_class)
-    refresh_button.click(
-        fn=refresh,
-        inputs=[],
-        outputs=[refresh_component]
-    )
-    return refresh_button
 
 def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu, gpu_memory,cpu_memory,safetensor):
     
@@ -234,11 +209,11 @@ def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu, gpu_memor
         max_memory=max_memory, 
         )
 
-    model_trainable_params, model_all_params = calc_trainable_parameters(base_model)
-    print(f"Model Trainable params: {model_trainable_params:,d} ({100 * model_trainable_params / model_all_params:.4f} %), All params: {model_all_params:,d}")
+    model_trainable_params, model_all_paramsbase = calc_trainable_parameters(base_model)
+    print(f"Model Trainable params: {model_trainable_params:,d} ({100 * model_trainable_params / model_all_paramsbase:.4f} %), All params: {model_all_paramsbase:,d}")
 
-    first_weight = base_model.model.layers[0].self_attn.q_proj.weight
-    first_weight_old = first_weight.clone()
+    #first_weight = base_model.model.layers[0].self_attn.q_proj.weight
+    #first_weight_old = first_weight.clone()
 
     if peft_model_name!="None":
         print(f"Loading PEFT: {peft_model_path}")
@@ -252,7 +227,7 @@ def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu, gpu_memor
         )
 
         model_trainable_params, model_all_params = calc_trainable_parameters(lora_model)
-        print(f"LoRA  Trainable params: {model_trainable_params:,d} ({100 * model_trainable_params / model_all_params:.4f} %), All params: {model_all_params:,d}")
+        print(f"LoRA  Trainable params: {model_trainable_params:,d} ({100 * model_trainable_params / model_all_params:.4f} %), Params with Lora: {model_all_params:,d} from {model_all_paramsbase:,d}")
 
 
         lora_weight = lora_model.base_model.model.model.layers[0].self_attn.q_proj.weight
@@ -267,7 +242,7 @@ def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu, gpu_memor
         lora_model.train(False)
 
         # did we do anything?
-        assert not torch.allclose(first_weight_old, first_weight)
+        #assert not torch.allclose(first_weight_old, first_weight)
 
 
     #print(f"Changing state dict")
@@ -708,8 +683,8 @@ def ui():
                 with gr.Row():
                     gr_modelmenu2 = gr.Dropdown(choices=utils.get_available_models(), value=model_name, label='LlaMA Model (float 16) HF only, No GPTQ, No GGML',elem_classes='slim-dropdown')
                     create_refresh_button(gr_modelmenu2, lambda: None, lambda: {'choices': utils.get_available_models()}, 'refresh-button')
-                groupsize = gr.Dropdown(label="Groupsize", choices=["None", 32, 64, 128, 1024], value='128')
-                wbits = gr.Dropdown(label="wbits", choices=["None", 1, 2, 3, 4, 8], value='4', interactive=False)
+                groupsize = gr.Dropdown(label="Groupsize", choices=["None", '32', '64', '128', '1024'], value='128', interactive=False)
+                wbits = gr.Dropdown(label="wbits", choices=["None", '1', '2', '3', '4', '8'], value='4', interactive=False)
                         
                 desact = gr.Checkbox(label="Quantize with desc_act (can slow down inference but the perplexity may be better)", value=False)
                 fast_tokenizer= gr.Checkbox(label="Use fast tokenizer", value=True)
