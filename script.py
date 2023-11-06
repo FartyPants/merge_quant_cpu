@@ -26,8 +26,10 @@ from transformers import AutoTokenizer
 from modules import utils
 from modules.models import unload_model
 import modules.shared as shared
+import numpy as np
 
 from modules.ui import create_refresh_button
+from datasets import load_dataset
 
 from peft.tuners.lora import LoraLayer
 from peft import (
@@ -108,6 +110,8 @@ def calc_trainable_parameters(model):
 def load_data(data_path, tokenizer, n_samples):
     with open(data_path, "r", encoding="utf-8") as f:
         raw_data = json.load(f)
+    
+    print("Loading Alpaca dataset")
 
     raw_data = random.sample(raw_data, k=min(n_samples, len(raw_data)))
 
@@ -266,6 +270,7 @@ def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu, gpu_memor
     yield f"Model saved to {output_dir}"
     print(f"**** DONE ****")
 """
+    traindataset = get_wikitext2(128, 0, 2048, pretrained_model_dir)
     if args.dataset == 'wikitext':
         traindataset = get_wikitext2(128, 0, args.seqlen, tokenizer)
     elif args.dataset == 'c4':
@@ -273,19 +278,46 @@ def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu, gpu_memor
 
      model.quantize(traindataset, use_triton=use_triton, batch_size=batch_size)
 
+"""
+# so slow!
+def get_wikitext2_v2(nsamples, seed, seqlen, tokenizer):
+    # set seed
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.random.manual_seed(seed)
+    
+    print (f"Processing Wikitext_v2: nsamples: {nsamples}, seqlen: {seqlen}")
+    # load dataset and preprocess 
+    traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
+    #testdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
+    trainenc = tokenizer("\n\n".join(traindata['text']), return_tensors='pt')
+    #testenc = tokenizer("\n\n".join(testdata['text']), return_tensors='pt')
+    
+    traindataset = []
+    print("[", end="")
+    for _ in range(nsamples):
+        i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
+        j = i + seqlen
+        inp = trainenc.input_ids[:, i:j]
+        attention_mask = torch.ones_like(inp)
+        traindataset.append({'input_ids':inp,'attention_mask': attention_mask})
+        print("+", end="")
+    print("]")    
+    return traindataset
+
 
 def get_wikitext2(nsamples, seed, seqlen, tokenizer):
 
     logger = logging.getLogger(__name__)
 
-    wikidata = Dataset.load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
+    print (f"Processing Wikitext: nsamples: {nsamples}, seqlen: {seqlen}")
+    wikidata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
     wikilist = [' \n' if s == '' else s for s in wikidata['text'] ]
 
     text = ''.join(wikilist)
     logger.info("Tokenising wikitext2")
     trainenc = tokenizer(text, return_tensors='pt')
 
-    import random
     random.seed(seed)
     np.random.seed(0)
     torch.random.manual_seed(0)
@@ -299,14 +331,66 @@ def get_wikitext2(nsamples, seed, seqlen, tokenizer):
         traindataset.append({'input_ids':inp,'attention_mask': attention_mask})
     return traindataset
 
+def get_wikitext2_v3(nsamples, seed, seqlen, tokenizer):
+    # set seed
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.random.manual_seed(seed)
+    
+    print (f"Processing Wikitext_v3: nsamples: {nsamples}, seqlen: {seqlen}")
+    # load dataset and preprocess 
+    traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
+
+    print (f"Dataset loaded {len(traindata)} items")
+    #testdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
+    # this is literally insane to to kenize the whole thing
+    #trainenc = tokenizer("\n\n".join(traindata['text']), return_tensors='pt')
+
+    #print (f"Dataset tokenized to {trainenc.input_ids.shape[1]} tokens")
+    #testenc = tokenizer("\n\n".join(testdata['text']), return_tensors='pt')
+    
+    traindataset = []
+    print("[", end="")
+
+    numdiv = int(seqlen / 50)+1
+    
+
+    for _ in range(nsamples):
+        while True:
+
+            i = random.randint(0, len(traindata) - (numdiv+1))
+            text = ''
+            for k in range(numdiv):
+                text = text+"\n"+traindata[i+k]['text']
+            
+            trainenc = tokenizer(text, return_tensors='pt')
+            #print (f"{trainenc.input_ids.shape[1]}")
+            if trainenc.input_ids.shape[1] >= seqlen:
+                break
+
+
+        i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
+        j = i + seqlen
+        inp = trainenc.input_ids[:, i:j]
+        attention_mask = torch.ones_like(inp)
+        traindataset.append({'input_ids':inp,'attention_mask': attention_mask})
+        print("+", end="")
+    print("]")    
+    return traindataset
+
+
 def get_c4(nsamples, seed, seqlen, tokenizer):
-    traindata = Dataset.load_dataset(
+
+    print (f"Processing C4: nsamples: {nsamples}, seqlen: {seqlen}")
+
+    traindata = load_dataset(
         'allenai/c4', 'allenai--c4', data_files={'train': 'en/c4-train.00000-of-01024.json.gz'}, split='train', use_auth_token=False
     )
 
-    import random
+   
     random.seed(seed)
     trainloader = []
+    print("[", end="")
     for _ in range(nsamples):
         while True:
             i = random.randint(0, len(traindata) - 1)
@@ -318,12 +402,39 @@ def get_c4(nsamples, seed, seqlen, tokenizer):
         inp = trainenc.input_ids[:, i:j]
         attention_mask = torch.ones_like(inp)
         trainloader.append({'input_ids':inp,'attention_mask': attention_mask})
-
+        print("+", end="")
+    print("]")     
     return trainloader
 
-"""
 
-def process_Quant(model_name, output_dir,groupsize,wbits,desact,fast_tokenizer,gpu_memory,cpu_memory,low_cpu):
+
+'''
+Using transformers
+from transformers import AutoModelForCausalLM, AutoTokenizer, GPTQConfig
+import torch
+
+model_id = "WizardLM/WizardLM-7B-V1.0"
+
+quantization_config = GPTQConfig(
+bits=4,
+group_size=128,
+dataset=”c4",
+desc_act=False,
+)
+
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+quant_model = AutoModelForCausalLM.from_pretrained(model_id, quantization_config=quantization_config, device_map=’auto’)
+
+from huggingface_hub import notebook_login
+
+notebook_login()
+
+quant_model.push_to_hub(“WizardLM-7B-V1.0-gptq-4bit”)
+tokenizer.push_to_hub(“WizardLM-7B-V1.0-gptq-4bit”)
+'''
+
+
+def process_Quant(model_name, output_dir,groupsize,wbits,desact,fast_tokenizer,gpu_memory,cpu_memory,low_cpu, dataset_type,max_seq_len,num_samples):
     base_model_name_or_path = Path(f'{shared.args.model_dir}/{model_name}')
     max_memory = dict()
     int_gpu = int(gpu_memory)
@@ -392,6 +503,22 @@ def process_Quant(model_name, output_dir,groupsize,wbits,desact,fast_tokenizer,g
     )
 
     end = time.time()
+
+    # get model maximum sequence length
+    model_config = model.config.to_dict()
+    seq_len_keys = ["max_position_embeddings", "seq_length", "n_positions"]
+    if any([k in model_config for k in seq_len_keys]):
+        for key in seq_len_keys:
+            if key in model_config:
+                #model.seqlen = model_config[key]
+                print(f"Model Nax seqlen: {model.seqlen}")
+                break
+    else:
+        print("can't get model's sequence length from model config, will set to 2048.")
+
+    #by default?    
+    #model.seqlen = 2048
+
  
     model_trainable_params, model_all_params = calc_trainable_parameters(model)
     print(f"Before Trainable params: {model_trainable_params:,d} ({100 * model_trainable_params / model_all_params:.4f} %), All params: {model_all_params:,d}")
@@ -401,19 +528,48 @@ def process_Quant(model_name, output_dir,groupsize,wbits,desact,fast_tokenizer,g
 
     start = time.time()
 
-    print(f"Loading Dataset extensions/merge_quant_cpu/dataset/alpaca_data_cleaned.json")
+
+
+    print(f"Loading Dataset")
     yield f"Loading Dataset"
 
-    num_samples = 128
-    examples = load_data("extensions/merge_quant_cpu/dataset/alpaca_data_cleaned.json", tokenizer, num_samples)
+    num_samples_int = int(num_samples)
+    print(f"num_samples {num_samples}")
 
-    examples_for_quant = [
-        {"input_ids": example["input_ids"], "attention_mask": example["attention_mask"]}
-        for example in examples
-    ]
-    print(f"Quantize started... (it will take time! ~30 min for 13b)")
+    if dataset_type=="Wikitext2":
+        examples_for_quant = get_wikitext2_v3(num_samples_int, 0, int(max_seq_len), tokenizer)
+    elif  dataset_type=="c4":
+        examples_for_quant = get_c4(num_samples_int, 0, int(max_seq_len), tokenizer)
+    else:
+        print(f"Loading Dataset extensions/merge_quant_cpu/dataset/alpaca_data_cleaned.json")
+        examples = load_data("extensions/merge_quant_cpu/dataset/alpaca_data_cleaned.json", tokenizer, num_samples_int)
+
+        examples_for_quant = [
+            {"input_ids": example["input_ids"], "attention_mask": example["attention_mask"]}
+            for example in examples
+        ]
+
+    
+    print(f"Quantize started... (it will take time! ~30 min for 13b, 20 min for 7b)")
     yield f"Quantize started...sit tight..."
 
+    # load from dataset
+    # Load data and tokenize examples
+    '''
+    n_samples = 1024
+    data = load_dataset("allenai/c4", data_files="en/c4-train.00001-of-01024.json.gz", split=f"train[:{n_samples*5}]")
+    tokenized_data = tokenizer("\n\n".join(data['text']), return_tensors='pt')
+
+    # Format tokenized examples
+    examples_for_quant = []
+    for _ in range(n_samples):
+        i = random.randint(0, tokenized_data.input_ids.shape[1] - tokenizer.model_max_length - 1)
+        j = i + tokenizer.model_max_length
+        input_ids = tokenized_data.input_ids[:, i:j]
+        attention_mask = torch.ones_like(input_ids)
+        examples_for_quant.append({'input_ids': input_ids, 'attention_mask': attention_mask})
+
+'''
 
     quant_batch_size = 1
 
@@ -683,12 +839,19 @@ def ui():
                 with gr.Row():
                     gr_modelmenu2 = gr.Dropdown(choices=utils.get_available_models(), value=model_name, label='LlaMA Model (float 16) HF only, No GPTQ, No GGML',elem_classes='slim-dropdown')
                     create_refresh_button(gr_modelmenu2, lambda: None, lambda: {'choices': utils.get_available_models()}, 'refresh-button')
-                groupsize = gr.Dropdown(label="Groupsize", choices=["None", '32', '64', '128', '1024'], value='128', interactive=False)
-                wbits = gr.Dropdown(label="wbits", choices=["None", '1', '2', '3', '4', '8'], value='4', interactive=False)
-                        
-                desact = gr.Checkbox(label="Quantize with desc_act (can slow down inference but the perplexity may be better)", value=False)
-                fast_tokenizer= gr.Checkbox(label="Use fast tokenizer", value=True)
-                low_cpu = gr.Checkbox(label="Low CPU memory usage", value=True)
+                
+                with gr.Row():
+                    with gr.Column():
+                        groupsize = gr.Dropdown(label="Groupsize", choices=["None", '32', '64', '128', '1024'], value='128', interactive=False)
+                        wbits = gr.Dropdown(label="wbits", choices=["None", '1', '2', '3', '4', '8'], value='4', interactive=False)
+                                
+                        desact = gr.Checkbox(label="Quantize with desc_act (slow down inference, better perplexity)", value=False)
+                        fast_tokenizer= gr.Checkbox(label="Use fast tokenizer", value=True)
+                        low_cpu = gr.Checkbox(label="Low CPU memory usage", value=False)
+                    with gr.Column():
+                        dataset_type = gr.Radio(choices=['Alpaca', 'Wikitext2', 'c4'], value='Wikitext2', interactive=True, label="Dataset. Alpaca is fastest, but offers less quality. Wikitext and c4 add 1/3 of processing time")
+                        max_seq_len = gr.Number(value = 2048,label="Max Sequence Length")
+                        num_samples = gr.Number(value = 128,label="Number of samples")
                 with gr.Row():        
                     autoformat = gr.Textbox(label='Name', info='Base name that will be expanded in the Formatted Output Dir', value='quantizied_model', interactive=True)
                     output_dirQ = gr.Textbox(label='Formatted Output Dir', info='The folder name of your merge (relative to text-generation-webui)', value='models/quantizied_model_GPTQ', interactive=True)
@@ -713,7 +876,7 @@ def ui():
                        
     gr_out = gr.Markdown('')   
     gr_apply.click(process_mergeCPU, inputs=[gr_modelmenu, gr_loramenu,output_dir,gr_gpu_cpu,gpu_memory,cpu_memory,safetensor], outputs=gr_out)
-    gr_applyQuant.click(process_Quant,[gr_modelmenu2, output_dirQ,groupsize,wbits,desact,fast_tokenizer,gpu_memory,cpu_memory,low_cpu], gr_out)
+    gr_applyQuant.click(process_Quant,[gr_modelmenu2, output_dirQ,groupsize,wbits,desact,fast_tokenizer,gpu_memory,cpu_memory,low_cpu,dataset_type, max_seq_len,num_samples], gr_out)
     #gr_applySplit.click(extract_lora_layers,[gr_modelmenu3, output_dirQ3], gr_out)
 
 
