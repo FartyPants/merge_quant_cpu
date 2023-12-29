@@ -27,7 +27,7 @@ from modules import utils
 from modules.models import unload_model
 import modules.shared as shared
 import numpy as np
-
+import re
 from modules.ui import create_refresh_button
 from datasets import load_dataset
 
@@ -85,7 +85,12 @@ from importlib.metadata import version
 params = {
     "display_name": "Merge-Quantize-CPU",
     "is_tab": True,
+    "list_by_time":True,
 }
+
+selected_lora_main_sub =''
+selected_lora_main =''
+selected_lora_sub = ''
 
 refresh_symbol = '\U0001f504'  # 🔄
 
@@ -174,6 +179,7 @@ def load_data(data_path, tokenizer, n_samples):
 
 def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu, gpu_memory,cpu_memory,safetensor):
     
+    global selected_lora_sub
     max_memory = dict()
     int_gpu = int(gpu_memory)
     if int_gpu > 0:    
@@ -188,9 +194,18 @@ def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu, gpu_memor
         max_memory = None
 
 #offload_folder=offload_folder,
+        
+    lora_subfolder = selected_lora_sub
+    if lora_subfolder == 'Final':
+        lora_subfolder = ''
 
     base_model_name_or_path = Path(f'{shared.args.model_dir}/{model_name}')
-    peft_model_path = Path(f'{shared.args.lora_dir}/{peft_model_name}')
+
+    if lora_subfolder!='':
+        peft_model_path = Path(f'{shared.args.lora_dir}/{peft_model_name}/{lora_subfolder}')
+    else:    
+        peft_model_path = Path(f'{shared.args.lora_dir}/{peft_model_name}')
+
     print(f"Unloading model from memory")
     unload_model()
 
@@ -268,6 +283,19 @@ def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu, gpu_memor
 
     print(f"Model saved to {output_dir}")
     yield f"Model saved to {output_dir}"
+
+
+    # Write content to the merge file
+
+    merge_file_path = os.path.join(output_dir, "_merge.txt")
+    with open(merge_file_path, 'w') as merge_file:
+        merge_file.write("This is a merge file content.\n")
+        merge_file.write(f"Base Model: {model_name}\n")
+        merge_file.write(f"LORA: {peft_model_name}\n")
+        merge_file.write(f"Checkpoint: {selected_lora_sub}\n")
+
+
+
     print(f"**** DONE ****")
 """
     traindataset = get_wikitext2(128, 0, 2048, pretrained_model_dir)
@@ -785,8 +813,85 @@ pipe.unet.set_adapter("combined")
 pipe.text_encoder.set_adapter("combined")
 
 '''
+def atoi(text):
+    return int(text) if text.isdigit() else text.lower()
+
+def natural_keys(text):
+    return [atoi(c) for c in re.split(r'(\d+)', text)]
+
+def list_Folders_byAlpha(directory):
+
+    if not directory.endswith('/'):
+        directory += '/'
+
+    subfolders = []
+    path = directory
+    name_list = os.listdir(path)
+    full_list = [os.path.join(path, i) for i in name_list]
+
+    time_sorted_list = sorted(full_list, key=natural_keys, reverse=False)
+
+    for entry in time_sorted_list:
+        if os.path.isdir(entry):
+            entry_str = f"{entry}"  # Convert entry to a string
+            full_path = entry_str
+            entry_str = entry_str.replace('\\','/')
+            entry_str = entry_str.replace(f"{directory}", "")  # Remove directory part
+            subfolders.append(entry_str)
+
+    return subfolders        
+
+
+def list_subfoldersByTime(directory):
+
+    if not directory.endswith('/'):
+        directory += '/'
+    subfolders = []
+    path = directory
+    name_list = os.listdir(path)
+    full_list = [os.path.join(path,i) for i in name_list]
+    time_sorted_list = sorted(full_list, key=os.path.getmtime,reverse=True)
+
+    for entry in time_sorted_list:
+        if os.path.isdir(entry):
+            entry_str = f"{entry}"  # Convert entry to a string
+            full_path = entry_str
+            entry_str = entry_str.replace('\\','/')
+            entry_str = entry_str.replace(f"{directory}", "")  # Remove directory part
+            subfolders.append(entry_str)
+
+    return subfolders
+
+def list_subfolders(directory):
+    subfolders = []
+    
+    if os.path.isdir(directory):
+        
+        subfolders.append('Final')
+
+        for entry in os.scandir(directory):
+            if entry.is_dir() and entry.name != 'runs':
+                subfolders.append(entry.name)
+
+    return sorted(subfolders, key=natural_keys, reverse=True)
+
+def get_available_loras():
+    model_dir = shared.args.lora_dir 
+       
+    subfolders = []
+    
+    if params.get("list_by_time",False):
+        subfolders = list_subfoldersByTime(model_dir)
+    else:
+        subfolders = list_Folders_byAlpha(model_dir)      
+
+    subfolders.insert(0, 'None')
+    return subfolders      
 
 def ui():
+    global selected_lora_main_sub
+    global selected_lora_main
+    global selected_lora_sub
 
     imported_logger.info(f"*** Extension Merge Loaded ***")
     print('Torch: ', version('torch'))
@@ -825,8 +930,14 @@ def ui():
                     gr_modelmenu = gr.Dropdown(choices=utils.get_available_models(), value=model_name, label='LlaMA Model (float 16) HF only, No GPTQ, No GGML',elem_classes='slim-dropdown')
                     create_refresh_button(gr_modelmenu, lambda: None, lambda: {'choices': utils.get_available_models()}, 'refresh-button')
                 with gr.Row():
-                    gr_loramenu = gr.Dropdown(multiselect=False, choices=utils.get_available_loras(), value=lora_names, label='LoRA', elem_classes='slim-dropdown')
-                    create_refresh_button(gr_loramenu, lambda: None, lambda: {'choices': utils.get_available_loras(), 'value': lora_names}, 'refresh-button')
+                    with gr.Column(scale=5):    
+                        with gr.Row():
+                            loramenu = gr.Dropdown(multiselect=False, choices=get_available_loras(), value='None', label='LoRA and checkpoints', elem_classes='slim-dropdown', allow_custom_value=True)
+                            create_refresh_button(loramenu, lambda: None, lambda: {'choices': get_available_loras()}, 'refresh-button')
+                    with gr.Column(scale=1):
+                        lora_list_by_time = gr.Checkbox(value = params["list_by_time"],label="Sort by Time added",info="Sorting")
+                with gr.Row():                            
+                    lorasub2 = gr.Radio(choices=[], value='', label='Checkpoints')
                     gr.Markdown('If no lora is selected, it will just resave the model in float16')
                 gr_gpu_cpu = gr.Radio(choices=['GPU (Auto)','CPU'], value = 'CPU')
                 safetensor = gr.Checkbox(label="Safe Tensor", value=True)
@@ -875,7 +986,7 @@ def ui():
     #        gr_applySplit = gr.Button(value='Do De-Merge')        
                        
     gr_out = gr.Markdown('')   
-    gr_apply.click(process_mergeCPU, inputs=[gr_modelmenu, gr_loramenu,output_dir,gr_gpu_cpu,gpu_memory,cpu_memory,safetensor], outputs=gr_out)
+    gr_apply.click(process_mergeCPU, inputs=[gr_modelmenu, loramenu,output_dir,gr_gpu_cpu,gpu_memory,cpu_memory,safetensor], outputs=gr_out)
     gr_applyQuant.click(process_Quant,[gr_modelmenu2, output_dirQ,groupsize,wbits,desact,fast_tokenizer,gpu_memory,cpu_memory,low_cpu,dataset_type, max_seq_len,num_samples], gr_out)
     #gr_applySplit.click(extract_lora_layers,[gr_modelmenu3, output_dirQ3], gr_out)
 
@@ -895,19 +1006,55 @@ def ui():
     autoformat.change(auto_format,[autoformat,wbits,groupsize],output_dirQ)
 
     def update_merge_name(module,lora):
+        global selected_lora_sub
+
         if not module:
             module = "module"
         if not lora:
             lora = "lora"
+        sublora = ''
+
+        if selected_lora_sub!='' and selected_lora_sub!='Final':
+            sublora = "+"+selected_lora_sub
 
         modulest = f"{module}"
         modulest = modulest.replace("_HF", "")
         modulest = modulest.replace("_Hf", "")
-        out = "models/"+f"{modulest}+{lora}_HF"
+        out = "models/"+f"{modulest}+{lora}{sublora}_HF"
         return out
       
 
-    gr_modelmenu.change(update_merge_name,[gr_modelmenu,gr_loramenu],output_dir)
-    gr_loramenu.change(update_merge_name,[gr_modelmenu,gr_loramenu],output_dir)
+    gr_modelmenu.change(update_merge_name,[gr_modelmenu,loramenu],output_dir)
+
+    def update_lotra_subs_main(selectlora):
+        global selected_lora_main
+        global selected_lora_sub 
+        selected_lora_main = ''
+        selected_lora_sub = ''   
+        if selectlora:
+            model_dir = f"{shared.args.lora_dir}/{selectlora}"  # Update with the appropriate directory path
+            selected_lora_main = selectlora
+            subfolders = list_subfolders(model_dir)
+            selected_lora_sub = 'Final'
+            return gr.Radio.update(choices=subfolders, value ='Final') 
+
+        return gr.Radio.update(choices=[], value ='')    
 
 
+    loramenu.change(update_lotra_subs_main,loramenu, lorasub2).then(update_merge_name,[gr_modelmenu,loramenu],output_dir)
+
+    def change_sort(sort):
+        global params
+        params.update({"list_by_time": sort})
+   
+ 
+    def update_reloadLora():
+        return gr.Radio.update(choices=get_available_loras())
+    
+    lora_list_by_time.change(change_sort,lora_list_by_time,None).then(update_reloadLora,None, loramenu)    
+
+    def update_lotra_sub(sub):
+        global selected_lora_sub
+        selected_lora_sub = sub
+        
+    lorasub2.change(update_lotra_sub, lorasub2, None ).then(update_merge_name,[gr_modelmenu,loramenu],output_dir)  
