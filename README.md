@@ -1,7 +1,7 @@
 # merge_quant_cpu
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Q5Q5MOB4M)
 
-Merge and quatize models for Text WebUI using CPU.
+Extension for WebUI to Merge and GPTQ quatize models using CPU.
 
 New:
 Reworked the terminal progress:
