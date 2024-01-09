@@ -484,13 +484,12 @@ def format_time(seconds: float):
 
 
 start_time = 0.00
-display_all = False
-
+disp_layernum = 0
 # Define your custom info method
 def custom_info(self, msg, *args, **kwargs):
     # Your custom implementation goes here
     global start_time
-    global display_all
+    global disp_layernum
 
     infotext = ""
     if msg.startswith("Start quantizing layer"):
@@ -499,6 +498,7 @@ def custom_info(self, msg, *args, **kwargs):
         total_steps = int(splitmsg[3].split("/")[1])
         if current_step<2:
             start_time = time.perf_counter()
+            disp_layernum = 0
         else:
             time_elapsed = time.perf_counter() - start_time
             if time_elapsed <= 0:
@@ -513,34 +513,47 @@ def custom_info(self, msg, *args, **kwargs):
 
                 total_time_estimate = (1.0 / its) * (total_steps)
             #[{timer_info}],
-            infotext = f" Elapsed: {format_time(time_elapsed)}/{format_time(total_time_estimate)}, Remaining: {YELLOW}{format_time(total_time_estimate - time_elapsed)}{RESET}"
+            infotext = f" ({format_time(time_elapsed)}/{format_time(total_time_estimate)})   ETA: {RED}{format_time(total_time_estimate - time_elapsed)}{RESET}"
        
         if current_step==2:
             print(f"[Benchmark: {RED}{timer_info}{RESET}]")
 
         if current_step==total_steps:
             print (f"{RED}Finishing the last Layer{RESET}")
-            print(" + Packing model (~5 min) - (Almost there!)")
-            display_all =  True
+            print(" + Packing model layers (~5 min) - (Almost there!)")
         else:
             print(f"{RED}{msg}{RESET} {infotext}")    
 
 
-    if msg.startswith("Quantizing") and display_all == False:
-        print(f"{GREEN} - {msg} {RESET}")
 
-    if display_all:
-        print(f" - {YELLOW}{msg}{RESET}")
+    if msg.startswith("Quantizing"):
+        COLUMN_WIDTH = 60
+        quantizing_msg = f" - {msg}"
+        # Calculate the length of the message and add dots to fill the COLUMN_WIDTH
+        padding = max(0, COLUMN_WIDTH - len(quantizing_msg))
+        quantizing_msg += '.' * padding
+        print(f"{GREEN}{quantizing_msg}{RESET}", end='')
+
+    if msg.startswith("avg loss"):
+        print(f" {YELLOW}{msg}{RESET}")
+
+    if msg.startswith("model.layers."):
+        parts = msg.split('.')
+        num_layer = int(parts[2])+1
+        if num_layer> disp_layernum:
+            disp_layernum = num_layer
+            print(f" - {YELLOW}Packing Layer: {num_layer}{RESET}")
+        
+
+           
+    #if display_all:
+    #    print(f" - {YELLOW}{msg}{RESET}")
 
     # Call the original info method to maintain its behavior
     original_info(self, msg, *args, **kwargs)
 
 
 def process_Quant(model_name, output_dir,groupsize,wbits,desact,fast_tokenizer,gpu_memory,cpu_memory,low_cpu, dataset_type,max_seq_len,num_samples):
-
-    global display_all
-
-    display_all =  False
 
     base_model_name_or_path = Path(f'{shared.args.model_dir}/{model_name}')
     max_memory = dict()
