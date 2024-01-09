@@ -10,5 +10,5 @@ Reworked the terminal progress:
 You should be able to figure it out.
 Don't try to be smart if you have potato GPU (that includes 24GB, hahaha) and just use CPU. It takes about minute, two to merge to HF and 30 min to quantize to GPTQ
 
-![image](https://github.com/FartyPants/merge_quant_cpu/assets/23346289/c9761b37-3979-4bc8-a014-cd69463677f5)
+![image](https://github.com/FartyPants/merge_quant_cpu/assets/23346289/b59fe564-3c04-4688-938c-85618b87bca1)
 
