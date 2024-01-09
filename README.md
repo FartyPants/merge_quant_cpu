@@ -18,3 +18,7 @@ Don't try to be smart if you have potato GPU (that includes 24GB, hahaha) and ju
 
 ![image](https://github.com/FartyPants/merge_quant_cpu/assets/23346289/b59fe564-3c04-4688-938c-85618b87bca1)
 
+# In general, you don't need to touch any of the settings.
+
+Just select model and Lora and Do Merge
+Then Select the merged model and Quantize with default params.
