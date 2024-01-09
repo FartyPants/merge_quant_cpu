@@ -12,8 +12,10 @@ Merge can now merge checkpoint (subfolders in Lora)
 
 ![image](https://github.com/FartyPants/merge_quant_cpu/assets/23346289/1fc8ce22-90f7-42d5-a93e-1c1aab65116e)
 
+## Interface
 
 You should be able to figure it out.
+
 Don't try to be smart if you have potato GPU (that includes 24GB, hahaha) and just use CPU. It takes about minute, two to merge to HF and 30 min to quantize to GPTQ
 
 ![image](https://github.com/FartyPants/merge_quant_cpu/assets/23346289/b59fe564-3c04-4688-938c-85618b87bca1)
