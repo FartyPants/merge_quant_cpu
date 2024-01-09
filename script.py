@@ -60,9 +60,11 @@ import logging
 
 
 # Configure the logger for the imported library
-imported_logger = logging.getLogger('auto_gptq.modeling._base')
+#imported_logger = logging.getLogger('auto_gptq.modeling._base')
 
-imported_logger.setLevel(logging.INFO)
+#imported_logger.setLevel(logging.INFO)
+
+
 #if not imported_logger.handlers:
 #    stream_handler = logging.StreamHandler()
     # Create a formatter to specify the log message format
@@ -461,8 +463,85 @@ quant_model.push_to_hub(“WizardLM-7B-V1.0-gptq-4bit”)
 tokenizer.push_to_hub(“WizardLM-7B-V1.0-gptq-4bit”)
 '''
 
+RED = "\033[91m"
+YELLOW = "\033[93m"
+GREEN = "\033[92m"
+RESET = "\033[0m"
+
+# Define the original info method
+original_info = logging.Logger.info
+
+def format_time(seconds: float):
+    if seconds < 120:
+        return f"{seconds:.0f}s"
+
+    minutes = seconds / 60
+    if minutes < 120:
+        return f"{minutes:.0f}min"
+
+    hours = minutes / 60
+    return f"{hours:.0f}h"
+
+
+start_time = 0.00
+display_all = False
+
+# Define your custom info method
+def custom_info(self, msg, *args, **kwargs):
+    # Your custom implementation goes here
+    global start_time
+    global display_all
+
+    infotext = ""
+    if msg.startswith("Start quantizing layer"):
+        splitmsg = msg.split()
+        current_step = int(splitmsg[3].split("/")[0])
+        total_steps = int(splitmsg[3].split("/")[1])
+        if current_step<2:
+            start_time = time.perf_counter()
+        else:
+            time_elapsed = time.perf_counter() - start_time
+            if time_elapsed <= 0:
+                timer_info = ""
+                total_time_estimate = 999
+            else:
+                its = (current_step-1) / time_elapsed
+                if its > 1:
+                    timer_info = f"{its:.0f}layer/s"
+                else:
+                    timer_info = f"{1.0/its:.0f}s/layer"
+
+                total_time_estimate = (1.0 / its) * (total_steps)
+            #[{timer_info}],
+            infotext = f" Elapsed: {format_time(time_elapsed)}/{format_time(total_time_estimate)}, Remaining: {YELLOW}{format_time(total_time_estimate - time_elapsed)}{RESET}"
+       
+        if current_step==2:
+            print(f"[Benchmark: {RED}{timer_info}{RESET}]")
+
+        if current_step==total_steps:
+            print (f"{RED}Finishing the last Layer{RESET}")
+            print(" + Packing model (~5 min) - (Almost there!)")
+            display_all =  True
+        else:
+            print(f"{RED}{msg}{RESET} {infotext}")    
+
+
+    if msg.startswith("Quantizing") and display_all == False:
+        print(f"{GREEN} - {msg} {RESET}")
+
+    if display_all:
+        print(f" - {YELLOW}{msg}{RESET}")
+
+    # Call the original info method to maintain its behavior
+    original_info(self, msg, *args, **kwargs)
+
 
 def process_Quant(model_name, output_dir,groupsize,wbits,desact,fast_tokenizer,gpu_memory,cpu_memory,low_cpu, dataset_type,max_seq_len,num_samples):
+
+    global display_all
+
+    display_all =  False
+
     base_model_name_or_path = Path(f'{shared.args.model_dir}/{model_name}')
     max_memory = dict()
     int_gpu = int(gpu_memory)
@@ -476,6 +555,9 @@ def process_Quant(model_name, output_dir,groupsize,wbits,desact,fast_tokenizer,g
         print(f"CPU: {max_memory['cpu']}")
     if not max_memory:
         max_memory = None
+
+    #imported_logger.setLevel(logging.INFO)
+
 
 
     print(f"Unloading model from memory")
@@ -578,8 +660,8 @@ def process_Quant(model_name, output_dir,groupsize,wbits,desact,fast_tokenizer,g
         ]
 
     
-    print(f"Quantize started... (it will take time! ~30 min for 13b, 20 min for 7b)")
-    yield f"Quantize started...sit tight..."
+    print(f"Quantize started... (it will take time! 30-35 min for 13b, 20-25 min for 7b)")
+    yield f"Quantizing ..sit tight... (see terminal for progress)"
 
     # load from dataset
     # Load data and tokenize examples
@@ -599,6 +681,10 @@ def process_Quant(model_name, output_dir,groupsize,wbits,desact,fast_tokenizer,g
 
 '''
 
+
+    # Monkey-patch the Logger class
+    logging.Logger.info = custom_info
+
     quant_batch_size = 1
 
     model.quantize(
@@ -608,6 +694,8 @@ def process_Quant(model_name, output_dir,groupsize,wbits,desact,fast_tokenizer,g
         autotune_warmup_after_quantized=False
     )
 
+
+    logging.Logger.info = original_info
 
 
     end = time.time()
@@ -625,12 +713,12 @@ def process_Quant(model_name, output_dir,groupsize,wbits,desact,fast_tokenizer,g
     print(f"After  Trainable params: {model_trainable_params:,d} ({100 * model_trainable_params / model_all_params:.4f} %), All params: {model_all_params:,d}")
 
 
-    print(f"Saving tokenizer model...")
+    print(f"Saving tokenizer ...")
     tokenizer.save_pretrained(f"{output_dir}")
 
     end = time.time()
     minutes = int(end - start_total)/60
-    print(f"***Done**** It only took: {minutes} min")
+    print(f"{RED}**** Done ****{RESET} It only took: {minutes} min")
     yield f"Done in {minutes} minutes"
 
 
@@ -892,8 +980,9 @@ def ui():
     global selected_lora_main_sub
     global selected_lora_main
     global selected_lora_sub
-
-    imported_logger.info(f"*** Extension Merge Loaded ***")
+    
+    #imported_logger.setLevel(logging.INFO)
+    #imported_logger.info(f"*** Extension Merge Loaded ***")
     print('Torch: ', version('torch'))
     print('Transformers: ', version('transformers'))
     print('Accelerate: ', version('accelerate'))
