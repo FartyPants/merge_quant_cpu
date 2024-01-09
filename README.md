@@ -5,6 +5,7 @@ Merge and quatize models for Text WebUI using CPU.
 
 New:
 Reworked the terminal progress:
+
 ![image](https://github.com/FartyPants/merge_quant_cpu/assets/23346289/7778ca9c-02ab-4c4b-b1f0-f1260c84d667)
 
 You should be able to figure it out.
