@@ -6,7 +6,7 @@ def set_protobuf_implementation_to_python():
 
 # Call the function to set the environment variable before using Protobuf or the Transformers library
 #set_protobuf_implementation_to_python()
-
+import shutil
 
 import gradio as gr
 import json
@@ -96,6 +96,87 @@ selected_lora_sub = ''
 
 refresh_symbol = '\U0001f504'  # 🔄
 
+import json
+
+def compare_and_log_state_dicts(dict1, dict2):
+
+    differences = []
+  
+
+    for key1, value1 in dict1.items():
+        if key1 in dict2:
+            value2 = dict2[key1]
+            if not torch.equal(value1, value2):
+                # Convert tensors to lists
+                list1 = value1.flatten().tolist()
+                list2 = value2.flatten().tolist()
+
+
+                # Identify differing elements
+                differing_indices = [i for i, (v1, v2) in enumerate(zip(list1, list2)) if v1 != v2]
+                print(f"{key1} differ in {len(differing_indices)} values")    
+                #if differing_indices:
+                #    # Include only differing elements in the output
+                #    difference = {
+                #        'key': key1,
+                #        'differing_elements': [(i, list1[i], list2[i]) for i in differing_indices],
+                #    }
+                #    #differences.append(difference)
+            else:
+                print(f"{key1} is same")      
+
+
+    # Save differences to a JSON file
+    with open('state_dict_diff.json', 'w') as json_file:
+        json.dump(differences, json_file, indent=2)
+ 
+# Example usage:
+# Assuming base_model1 and base_model2 are two instances of the same model
+#state_dict1 = base_model1.state_dict()
+#state_dict2 = base_model2.state_dict()
+
+
+
+
+def comare_dict(model1, model2):
+
+    max_memory = None
+    base_model_name_or_path1 = Path(f'{shared.args.model_dir}/{model1}')
+    base_model_name_or_path2 = Path(f'{shared.args.model_dir}/{model2}')
+
+
+    print(f"Unloading model from memory")
+    unload_model()
+
+    device_arg = { 'device_map': 'auto' }
+    device_map_arg = {"": "cpu"}
+
+    print(f"Loading base model A: {base_model_name_or_path1}")
+    base_model1 = AutoModelForCausalLM.from_pretrained(
+        base_model_name_or_path1,
+        load_in_8bit=False,
+        torch_dtype=torch.float16,
+        device_map=device_map_arg,
+        return_dict=True,
+        max_memory=max_memory, 
+        )
+
+    print(f"Loading base model B: {base_model_name_or_path2}")
+    base_model2 = AutoModelForCausalLM.from_pretrained(
+        base_model_name_or_path2,
+        load_in_8bit=False,
+        torch_dtype=torch.float16,
+        device_map=device_map_arg,
+        return_dict=True,
+        max_memory=max_memory, 
+        )
+
+    state_dict1 = base_model1.state_dict()
+    state_dict2 = base_model2.state_dict()
+
+    compare_and_log_state_dicts(state_dict1, state_dict2)
+
+    print("finished")
 
 def calc_trainable_parameters(model):
     trainable_params = 0
@@ -235,6 +316,11 @@ def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu, gpu_memor
 
     #first_weight = base_model.model.layers[0].self_attn.q_proj.weight
     #first_weight_old = first_weight.clone()
+    #attributes_and_methods = vars(base_model.model)
+    #print(attributes_and_methods)
+
+    #print(f"saving state dict")
+    #torch.save(base_model.model.state_dict(), 'model_checkpoint.pth')
 
     if peft_model_name!="None":
         print(f"Loading PEFT: {peft_model_path}")
@@ -273,15 +359,40 @@ def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu, gpu_memor
     #    for k, v in lora_model_sd.items()
     #    if "lora" not in k
     #}
-    print(f"Loading tokenizer")
-   
-    tokenizer = LlamaTokenizer.from_pretrained(base_model_name_or_path)
+
     #max_shard_size="400MB"
     print(f"Saving model in 10GB shard size ... wait - don't touch anyhing yet!")
     yield f"Saving model in 10GB shard size ... wait - don't touch anyhing yet!"
     LlamaForCausalLM.save_pretrained(base_model, f"{output_dir}", safe_serialization=safetensor) #, state_dict=deloreanized_sd)
+
+
+    tokenizer_path = os.path.join(base_model_name_or_path, "tokenizer.model")
+    # Check if the tokenizer.model file exists
+    if not os.path.isfile(tokenizer_path):
+        print(f"The tokenizer.model file does not exist at the path: {tokenizer_path}")
+        tokenizer_config_path = os.path.join(base_model_name_or_path, "tokenizer_config.json")
+        output_tokenizer_config_path = os.path.join(output_dir, "tokenizer_config.json")
+        if os.path.isfile(tokenizer_config_path):
+            shutil.copyfile(tokenizer_config_path, output_tokenizer_config_path)
+            print(output_tokenizer_config_path)
+        
+        tokenizer_config_path2 = os.path.join(base_model_name_or_path, "tokenizer.json")
+        output_tokenizer_config_path2 = os.path.join(output_dir, "tokenizer.json")
+        if os.path.isfile(tokenizer_config_path2):
+            shutil.copyfile(tokenizer_config_path2, output_tokenizer_config_path2)
+            print(output_tokenizer_config_path2)
+        
+        tokenizer_config_path3 = os.path.join(base_model_name_or_path, "special_tokens_map.json")
+        output_tokenizer_config_path3 = os.path.join(output_dir, "special_tokens_map.json")
+        if os.path.isfile(tokenizer_config_path3):
+            shutil.copyfile(tokenizer_config_path3, output_tokenizer_config_path3)
+            print(output_tokenizer_config_path3)
+ 
+    else:
+        print(f"Loading tokenizer")
    
-    tokenizer.save_pretrained(f"{output_dir}")
+        tokenizer = LlamaTokenizer.from_pretrained(base_model_name_or_path)
+        tokenizer.save_pretrained(f"{output_dir}")
 
     print(f"Model saved to {output_dir}")
     yield f"Model saved to {output_dir}"
@@ -1071,6 +1182,7 @@ def ui():
         with gr.Row():
             with gr.Column():    
                 gr_apply = gr.Button(value='Do Merge')
+                #gr_compare = gr.Button('Compare 1 and 2')
             with gr.Column():                    
                 gr_applyQuant = gr.Button(value='Do Quantization')        
     #with gr.Accordion("Extract Lora", open=False):
@@ -1092,6 +1204,7 @@ def ui():
     gr_applyQuant.click(process_Quant,[gr_modelmenu2, output_dirQ,groupsize,wbits,desact,fast_tokenizer,gpu_memory,cpu_memory,low_cpu,dataset_type, max_seq_len,num_samples], gr_out)
     #gr_applySplit.click(extract_lora_layers,[gr_modelmenu3, output_dirQ3], gr_out)
 
+    #gr_compare.click(comare_dict,[gr_modelmenu,gr_modelmenu2], None )
 
     def auto_format(inputs, wbits,groupsize):
         bits = int(wbits)
