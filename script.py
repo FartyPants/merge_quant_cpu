@@ -19,7 +19,7 @@ from transformers import LlamaForCausalLM, LlamaTokenizer, AutoModelForCausalLM
 from transformers import LlamaConfig
 import argparse
 import sys
-from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
+#from .auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
 from datasets import Dataset
 from transformers import AutoTokenizer
 
@@ -666,6 +666,8 @@ def custom_info(self, msg, *args, **kwargs):
 
 def process_Quant(model_name, output_dir,groupsize,wbits,desact,fast_tokenizer,gpu_memory,cpu_memory,low_cpu, dataset_type,max_seq_len,num_samples):
 
+    from .auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
+    
     base_model_name_or_path = Path(f'{shared.args.model_dir}/{model_name}')
     max_memory = dict()
     int_gpu = int(gpu_memory)
