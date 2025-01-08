@@ -27,5 +27,5 @@ Just select model and Lora and Do Merge
 Then Select the merged model and Quantize with default params.
 
 NOTE: if you don't have AutoGPTQ installed then Quantization will throw an error. I would actually suggest not to use GPTQ anymore, as most people moved to GGUF or exllama2
-You can install AutogptQ in the environment by using cmd_windows.bat
+You can try to install AutogptQ in the environment by using cmd_windows.bat, but there is constant on and off issue with AutoGPTQ in WebUI.
 
