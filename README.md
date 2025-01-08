@@ -25,3 +25,7 @@ Don't try to be smart if you have potato GPU (that includes 24GB, hahaha) and ju
 Just select model and Lora and Do Merge
 
 Then Select the merged model and Quantize with default params.
+
+NOTE: if you don't have AutoGPTQ installed then Quantization will throw an error. I would actually suggest not to use GPTQ anymore, as most people moved to GGUF or exllama2
+You can install AutogptQ in the environment by using cmd_windows.bat
+
