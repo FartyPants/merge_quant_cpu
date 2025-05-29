@@ -337,7 +337,7 @@ def process_mergeCPU(model_name, peft_model_name, output_dir, gpu_cpu, gpu_memor
         print(f"LoRA  Trainable params: {model_trainable_params:,d} ({100 * model_trainable_params / model_all_params:.4f} %), Params with Lora: {model_all_params:,d} from {model_all_paramsbase:,d}")
 
 
-        lora_weight = lora_model.base_model.model.model.layers[0].self_attn.q_proj.weight
+        #lora_weight = lora_model.base_model.model.model.layers[0].self_attn.q_proj.weight
         #print(f"Layer[0] LoRA weight: {first_weight_old} -> {lora_weight}")
 
         #assert torch.allclose(first_weight_old, first_weight)
@@ -666,8 +666,8 @@ def custom_info(self, msg, *args, **kwargs):
 
 def process_Quant(model_name, output_dir,groupsize,wbits,desact,fast_tokenizer,gpu_memory,cpu_memory,low_cpu, dataset_type,max_seq_len,num_samples):
 
-    from .auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
-    
+    from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
+
     base_model_name_or_path = Path(f'{shared.args.model_dir}/{model_name}')
     max_memory = dict()
     int_gpu = int(gpu_memory)
@@ -1211,7 +1211,9 @@ def ui():
     def auto_format(inputs, wbits,groupsize):
         bits = int(wbits)
         group = int(groupsize)
-        output = f"models/{inputs}-{bits}b-{group}g-GPTQ"
+
+        base_model_name_or_path = Path(f'{shared.args.model_dir}/{inputs}-{bits}b-{group}g-GPTQ')
+        output = base_model_name_or_path
         return output
     
     def auto_form2(inputs,wbits,groupsize):
@@ -1237,7 +1239,8 @@ def ui():
         modulest = f"{module}"
         modulest = modulest.replace("_HF", "")
         modulest = modulest.replace("_Hf", "")
-        out = "models/"+f"{modulest}+{lora}{sublora}_HF"
+        
+        out = f"{shared.args.model_dir}/{modulest}+{lora}{sublora}_HF"
         return out
       
 
